@@ -5,15 +5,24 @@ d'entreprise. Visualise des cibles PME issues d'un sourcing automatisé
 (axes industriels et prestations techniques) avec KPIs, filtres dynamiques
 et liens directs vers les fiches d'entreprises.
 
-## Démarrage rapide
+## Modes d'utilisation
 
-### Utiliser l'app déployée
-1. Ouvrir l'URL Streamlit Cloud (lien fourni séparément)
-2. Glisser-déposer un CSV au format attendu dans la barre latérale
-3. Filtrer, explorer, exporter
+Le dashboard supporte 3 sources de données, dans cet ordre de priorité :
 
-> 🔒 Les CSV importés restent en mémoire navigateur le temps de la session —
-> aucune donnée n'est conservée côté serveur.
+1. **Google Sheets** (mode partage) — l'opérateur configure une URL de sheet
+   dans les secrets Streamlit, le dashboard auto-charge les données.
+   Idéal pour partager avec des destinataires non-techniques (un seul lien).
+2. **Upload manuel** — glisser-déposer d'un CSV dans la barre latérale.
+   Pratique pour qualifier ponctuellement une autre source.
+3. **Local** — auto-chargement depuis `../data/*.csv` (dev local uniquement).
+
+### Pour un destinataire non-technique
+1. Cliquer sur l'URL fournie
+2. (Si protection activée) Saisir le mot de passe
+3. Le dashboard s'affiche immédiatement avec les données à jour
+
+> 🔒 Aucune donnée n'est stockée côté serveur — tout est lu à la demande
+> depuis Google Sheets ou le fichier importé en mémoire de session.
 
 ### Lancer en local
 ```bash
@@ -82,7 +91,39 @@ INSEE SIRENE et INPI RNE.
 - CSV de la sélection courante
 - CSV tier 1 uniquement (cibles prioritaires)
 
-## Protection par mot de passe (optionnel)
+## Configuration Google Sheets (mode partage)
+
+Pour qu'un destinataire non-technique voie les données automatiquement
+en cliquant sur l'URL :
+
+### 1. Créer une Google Sheet
+- Une feuille avec les colonnes attendues (voir plus haut)
+- Pour mettre à jour : **File → Import → Upload → Replace current sheet**
+  avec le CSV généré localement
+
+### 2. Partager la sheet
+- **Partage → Toute personne disposant du lien — Lecteur**
+- Copier l'URL (format `https://docs.google.com/spreadsheets/d/.../edit#gid=0`)
+
+### 3. Configurer dans Streamlit Cloud
+**Settings → Secrets**, ajouter :
+
+```toml
+# Une seule sheet (le plus simple)
+GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/TON_ID/edit#gid=0"
+
+# Ou plusieurs sources (un onglet par axe)
+[google_sheets]
+"Pipeline complet" = "https://docs.google.com/spreadsheets/d/TON_ID/edit#gid=0"
+"CND"              = "https://docs.google.com/spreadsheets/d/TON_ID/edit#gid=12345"
+"Métrologie"       = "https://docs.google.com/spreadsheets/d/TON_ID/edit#gid=67890"
+```
+
+L'URL "/edit" classique est automatiquement convertie en URL d'export CSV
+côté dashboard. Le cache se rafraîchit toutes les 5 minutes (bouton 🔄
+dispo dans la sidebar pour forcer).
+
+## Protection par mot de passe (recommandé en mode partage)
 
 Pour restreindre l'accès à l'app déployée :
 

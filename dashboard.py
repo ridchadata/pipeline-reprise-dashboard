@@ -184,6 +184,86 @@ def load_uploaded_csv(uploaded_file) -> pd.DataFrame:
     return normalize_df(df, uploaded_file.name)
 
 
+# =========================================================================
+# CHARGEMENT DEPUIS GOOGLE SHEETS (mode "lien direct")
+# =========================================================================
+# Configurable via Streamlit secrets (Settings > Secrets sur share.streamlit.io)
+# ou via variables d'environnement en local.
+#
+# Format secrets.toml :
+#
+#   # Une seule sheet :
+#   GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/.../export?format=csv&gid=0"
+#
+#   # Plusieurs sheets (axes séparés par exemple) :
+#   [google_sheets]
+#   "Pipeline complet" = "https://docs.google.com/.../export?format=csv&gid=0"
+#   "CND"              = "https://docs.google.com/.../export?format=csv&gid=12345"
+#   "Métrologie"       = "https://docs.google.com/.../export?format=csv&gid=67890"
+#
+# La sheet doit être en partage "Toute personne disposant du lien — Lecteur".
+
+def get_sheet_sources() -> dict[str, str]:
+    """Retourne un dict {nom_lisible: url_export_csv} depuis secrets/env."""
+    sources: dict[str, str] = {}
+
+    # Format multi-sheets
+    try:
+        gs = st.secrets.get("google_sheets")
+        if gs:
+            for name, url in dict(gs).items():
+                if url:
+                    sources[str(name)] = str(url)
+    except (FileNotFoundError, AttributeError):
+        pass
+
+    # Format URL unique (pratique pour démarrer)
+    try:
+        single = st.secrets.get("GOOGLE_SHEET_URL")
+        if single:
+            sources["Pipeline"] = str(single)
+    except (FileNotFoundError, AttributeError):
+        pass
+
+    # Fallback variable d'environnement
+    env_url = os.environ.get("GOOGLE_SHEET_URL")
+    if env_url and "Pipeline" not in sources:
+        sources["Pipeline"] = env_url
+
+    return sources
+
+
+def normalize_sheet_url(url: str) -> str:
+    """Convertit une URL Google Sheets standard en URL d'export CSV.
+
+    Accepte :
+    - https://docs.google.com/spreadsheets/d/{ID}/edit#gid={GID}
+    - https://docs.google.com/spreadsheets/d/{ID}/edit?gid={GID}
+    - https://docs.google.com/spreadsheets/d/{ID}/export?format=csv&gid={GID}
+    Tous sont normalisés en URL d'export CSV.
+    """
+    if "/export?" in url and "format=csv" in url:
+        return url
+    # Extraire l'ID
+    import re
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", url)
+    if not m:
+        return url
+    sheet_id = m.group(1)
+    # Extraire le GID (onglet)
+    g = re.search(r"[?#&]gid=(\d+)", url)
+    gid = g.group(1) if g else "0"
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+
+
+@st.cache_data(ttl=300)  # rafraîchit toutes les 5 minutes
+def load_from_sheet(url: str, source_name: str) -> pd.DataFrame:
+    """Charge un CSV depuis une URL Google Sheets publique."""
+    csv_url = normalize_sheet_url(url)
+    df = pd.read_csv(csv_url, dtype=str)
+    return normalize_df(df, source_name)
+
+
 def validate_columns(df: pd.DataFrame) -> tuple[bool, list[str]]:
     """Vérifie que les colonnes essentielles sont présentes."""
     missing = EXPECTED_COLUMNS - set(df.columns)
@@ -199,19 +279,41 @@ st.caption("Sourcing automatisé via recherche-entreprises.api.gouv.fr · "
            "axes CND, Métrologie, Maintenance industrielle de niche")
 
 local_csvs = list_local_csvs()
+sheet_sources = get_sheet_sources()
+local_options: dict[str, Path] = {}
 
 with st.sidebar:
     st.header("📂 Sources de données")
 
+    # Priorité d'affichage : Sheets > upload > local
+    if sheet_sources:
+        st.success(f"📊 {len(sheet_sources)} source(s) Google Sheets connectée(s)")
+        sheet_choice = st.multiselect(
+            "Sources actives",
+            options=list(sheet_sources.keys()),
+            default=list(sheet_sources.keys()),
+        )
+        col_r1, col_r2 = st.columns([1, 1])
+        with col_r1:
+            if st.button("🔄 Rafraîchir", use_container_width=True):
+                st.cache_data.clear()
+                st.rerun()
+        with col_r2:
+            st.caption("auto: 5 min")
+        st.divider()
+        st.caption("Ou importer un CSV manuellement (override) :")
+    else:
+        sheet_choice = []
+
     uploaded_files = st.file_uploader(
-        "Importer un ou plusieurs CSV",
+        "Importer un CSV (optionnel)",
         type=["csv"],
         accept_multiple_files=True,
-        help="Glisse-dépose un CSV généré par run_sourcing.py. "
-             "Tu peux en uploader plusieurs pour les comparer/agréger.",
+        help="Glisse-dépose un CSV pour visualiser une autre source. "
+             "Si défini, remplace les sources Google Sheets pour la session.",
     )
 
-    if local_csvs and not uploaded_files:
+    if local_csvs and not uploaded_files and not sheet_sources:
         st.divider()
         st.caption("📁 Mode local détecté")
         local_options = {f"{p.name}  ({p.stat().st_size // 1024} Ko)": p for p in local_csvs}
@@ -224,11 +326,13 @@ with st.sidebar:
         selected_local = []
 
 
-# ---- Chargement des données ----
+# ---- Chargement des données (priorité : upload > sheets > local) ----
 dfs = []
 errors = []
+data_source_label = ""
 
 if uploaded_files:
+    data_source_label = f"{len(uploaded_files)} fichier(s) importé(s)"
     for uf in uploaded_files:
         try:
             df = load_uploaded_csv(uf)
@@ -239,7 +343,20 @@ if uploaded_files:
             dfs.append(df)
         except Exception as e:
             errors.append(f"{uf.name} : erreur de lecture : {e}")
+elif sheet_choice:
+    data_source_label = f"Google Sheets ({len(sheet_choice)} source(s))"
+    for name in sheet_choice:
+        try:
+            df = load_from_sheet(sheet_sources[name], name)
+            ok, missing = validate_columns(df)
+            if not ok:
+                errors.append(f"Sheet '{name}' : colonnes manquantes : {missing}")
+                continue
+            dfs.append(df)
+        except Exception as e:
+            errors.append(f"Sheet '{name}' : erreur de lecture : {e}")
 elif selected_local:
+    data_source_label = f"{len(selected_local)} fichier(s) local(aux)"
     for label in selected_local:
         path = local_options[label]
         try:
@@ -253,34 +370,56 @@ for err in errors:
 
 if not dfs:
     # Empty state — instructions
-    st.info(
-        "👈 **Pour commencer** : importe un fichier CSV via la barre latérale.\n\n"
-        "Le CSV doit avoir été généré par le script "
-        "[`run_sourcing.py`](https://github.com/) du projet de sourcing "
-        "(colonnes attendues : `score`, `axe_detecte`, `denomination`, `siren`, "
-        "`commune`, `departement`, `dirigeant_age_max`, etc.)."
-    )
-    st.markdown("""
-    ### Comment générer un CSV ?
+    if not sheet_sources:
+        st.info(
+            "👈 **Pour commencer** : importe un fichier CSV via la barre latérale, "
+            "ou configure une source Google Sheets dans les secrets Streamlit."
+        )
+        st.markdown("""
+        ### Configurer une source Google Sheets (recommandé pour partager)
 
-    1. Cloner le repo de sourcing (Python)
-    2. Configurer les axes prioritaires dans `config.py`
-    3. Lancer : `python run_sourcing.py --axe cnd --geo all --pme-only`
-    4. Le CSV apparaît dans `data/`
-    5. Importer ici 👈
+        Dans **Streamlit Cloud → Settings → Secrets**, ajoute :
 
-    ### Aperçu des fonctionnalités
-    - 📊 KPIs synthétiques (volume, tier 1, signaux transmission)
-    - 📈 Graphes interactifs (scores, géographies, âges, axes)
-    - 🎯 Tableau filtrable avec liens directs Pappers et Société.com
-    - ⬇️ Export du sous-ensemble filtré
-    """)
+        ```toml
+        # Une seule sheet
+        GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/TON_ID/edit#gid=0"
+
+        # Ou plusieurs (un onglet par axe par exemple)
+        [google_sheets]
+        "Pipeline complet" = "https://docs.google.com/spreadsheets/d/TON_ID/edit#gid=0"
+        "CND"              = "https://docs.google.com/spreadsheets/d/TON_ID/edit#gid=12345"
+        "Métrologie"       = "https://docs.google.com/spreadsheets/d/TON_ID/edit#gid=67890"
+        ```
+
+        La sheet doit être en partage **"Toute personne disposant du lien — Lecteur"**.
+
+        ### Sinon : importer un CSV manuellement
+        Glisse-dépose un fichier généré par le script de sourcing dans la zone "Importer un CSV"
+        de la barre latérale.
+
+        ### Fonctionnalités du dashboard
+        - 📊 KPIs synthétiques (volume, tier 1, signaux transmission)
+        - 📈 Graphes interactifs (scores, géographies, âges, axes)
+        - 🎯 Tableau filtrable avec liens directs Pappers et Société.com
+        - ⬇️ Export du sous-ensemble filtré
+        """)
+    else:
+        st.error(
+            "Sources Google Sheets configurées mais lecture impossible. "
+            "Vérifie que les sheets sont bien en partage 'Toute personne disposant "
+            "du lien — Lecteur'."
+        )
+        for err in errors:
+            st.warning(err)
     st.stop()
 
 
 # Concaténation + dédoublonnage par siren
 df_raw = pd.concat(dfs, ignore_index=True)
 df_raw = df_raw.sort_values("score", ascending=False).drop_duplicates(subset=["siren"], keep="first")
+
+# Indicateur de source (au-dessus des KPIs)
+st.caption(f"📡 Source : **{data_source_label}** · {len(df_raw):,} cibles uniques après dédoublonnage SIREN".replace(",", " "))
 
 
 # =========================================================================
