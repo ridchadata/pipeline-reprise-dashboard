@@ -8,4 +8,7 @@ __pycache__/
 !.env.example
 .streamlit/secrets.toml
 *.csv
-data/
+# Instantané de données publié avec l'app (repo privé) : seuls les CSV
+# targets_*.csv déposés dans data/ sont versionnés.
+data/*
+!data/targets_*.csv

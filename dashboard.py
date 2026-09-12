@@ -26,7 +26,10 @@ import plotly.express as px
 import streamlit as st
 
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+# Donnees locales : `data/` a cote de l'app (depot de deploiement autonome)
+# ou `../data/` (app logee dans un sous-dossier du projet complet).
+_HERE = Path(__file__).resolve().parent
+DATA_DIR = _HERE / "data" if (_HERE / "data").is_dir() else _HERE.parent / "data"
 
 
 # =========================================================================
@@ -256,6 +259,25 @@ def normalize_sheet_url(url: str) -> str:
     return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
 
 
+def diagnose_sheet_error(exc: Exception) -> str:
+    """Traduit une erreur de lecture Google Sheets en message actionnable."""
+    from urllib.error import HTTPError
+
+    if isinstance(exc, HTTPError):
+        if exc.code == 410:
+            return ("la feuille Google visée n'existe plus (supprimée, ou corbeille "
+                    "vidée). Recrée une feuille et mets à jour `GOOGLE_SHEET_URL` "
+                    "dans les secrets Streamlit.")
+        if exc.code == 404:
+            return ("feuille introuvable — l'identifiant du document ou le `gid` de "
+                    "l'onglet est erroné dans les secrets.")
+        if exc.code in (401, 403):
+            return ("accès refusé — mets la feuille en partage « Toute personne "
+                    "disposant du lien — Lecteur ».")
+        return f"HTTP {exc.code} — {exc.reason}"
+    return str(exc)
+
+
 @st.cache_data(ttl=300)  # rafraîchit toutes les 5 minutes
 def load_from_sheet(url: str, source_name: str) -> pd.DataFrame:
     """Charge un CSV depuis une URL Google Sheets publique."""
@@ -330,6 +352,7 @@ with st.sidebar:
 dfs = []
 errors = []
 data_source_label = ""
+fallback_used = False
 
 if uploaded_files:
     data_source_label = f"{len(uploaded_files)} fichier(s) importé(s)"
@@ -354,7 +377,19 @@ elif sheet_choice:
                 continue
             dfs.append(df)
         except Exception as e:
-            errors.append(f"Sheet '{name}' : erreur de lecture : {e}")
+            errors.append(f"Source « {name} » : {diagnose_sheet_error(e)}")
+
+    # Repli : si aucune source distante n'est lisible, on sert les données
+    # embarquées dans le dépôt plutôt que d'afficher une page vide au visiteur.
+    if not dfs and local_csvs:
+        for path in local_csvs:
+            try:
+                dfs.append(load_local_csv(str(path)))
+            except Exception as e:
+                errors.append(f"{path.name} : erreur : {e}")
+        if dfs:
+            fallback_used = True
+            data_source_label = f"{len(dfs)} fichier(s) embarqué(s) dans le dépôt"
 elif selected_local:
     data_source_label = f"{len(selected_local)} fichier(s) local(aux)"
     for label in selected_local:
@@ -365,8 +400,16 @@ elif selected_local:
         except Exception as e:
             errors.append(f"{path.name} : erreur : {e}")
 
-for err in errors:
-    st.warning(err)
+if dfs:
+    if fallback_used:
+        st.info(
+            "ℹ️ Les sources Google Sheets sont indisponibles : affichage des "
+            "données embarquées dans le dépôt (dernier instantané publié)."
+        )
+    if errors:
+        with st.expander("⚠️ Détail des avertissements de chargement", expanded=False):
+            for err in errors:
+                st.warning(err)
 
 if not dfs:
     # Empty state — instructions
@@ -404,13 +447,25 @@ if not dfs:
         - ⬇️ Export du sous-ensemble filtré
         """)
     else:
-        st.error(
-            "Sources Google Sheets configurées mais lecture impossible. "
-            "Vérifie que les sheets sont bien en partage 'Toute personne disposant "
-            "du lien — Lecteur'."
-        )
+        st.error("Aucune donnée à afficher — la ou les sources configurées sont illisibles.")
         for err in errors:
             st.warning(err)
+        st.markdown("""
+        ### Rétablir la source de données
+
+        1. **Recréer la feuille** sur https://sheets.google.com et y importer le
+           dernier CSV du pipeline (`Fichier → Importer → Remplacer la feuille`).
+        2. **Partager** : `Partager → Accès général → Toute personne disposant du
+           lien → Lecteur`.
+        3. **Mettre à jour le secret** dans *Streamlit Cloud → Settings → Secrets* :
+
+           ```toml
+           GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/NOUVEL_ID/edit#gid=0"
+           ```
+
+        *Alternative sans Google Sheets* : déposer un CSV `targets_*.csv` dans le
+        dossier `data/` du dépôt — l'app le sert automatiquement en repli.
+        """)
     st.stop()
 
 
