@@ -15,16 +15,20 @@ Le dashboard supporte 4 sources de données, dans cet ordre de priorité :
    est défini dans les secrets Streamlit, le dashboard lit la feuille à chaque
    rafraîchissement (cache 5 min).
 3. **Instantané embarqué** — les CSV `data/targets_*.csv` versionnés dans ce
-   dépôt. C'est la source **par défaut et le filet de sécurité** : si les
+   dépôt (voir l'avertissement de confidentialité plus bas). C'est la source **par défaut et le filet de sécurité** : si les
    sources Google Sheets deviennent illisibles (feuille supprimée → `410 Gone`,
    partage révoqué → `403`), l'app bascule dessus automatiquement au lieu
    d'afficher une page vide.
 4. **Local** — `data/` à côté de l'app, ou `../data/` si l'app vit dans un
    sous-dossier du projet de sourcing complet.
 
-> ⚠️ Ce dépôt est **privé** : il embarque un instantané de données nominatives
-> (dirigeants, âges, téléphones, emails). Il ne doit pas repasser en public, et
-> le secret `DASHBOARD_PASSWORD` doit rester défini sur l'app déployée.
+> ⚠️ Ce dépôt est **public** et embarque un instantané de données nominatives
+> (dirigeants, âges, téléphones, emails) — choix assumé de l'opérateur.
+> Streamlit Community Cloud ne sait pas cloner un dépôt privé sans ré-autoriser
+> l'accès GitHub (`Failed to download the sources`), et le compte gratuit est
+> limité à une seule app privée, déjà utilisée.
+> Le secret `DASHBOARD_PASSWORD` doit rester défini : c'est lui qui protège
+> l'accès au dashboard déployé.
 
 ### Mettre à jour l'instantané embarqué
 ```bash
@@ -44,7 +48,7 @@ Streamlit Cloud redéploie seul en 1-2 min.
 
 ### Lancer en local
 ```bash
-gh repo clone ridchadata/pipeline-reprise-dashboard   # dépôt privé
+git clone https://github.com/ridchadata/pipeline-reprise-dashboard.git
 cd pipeline-reprise-dashboard
 pip install -r requirements.txt
 streamlit run dashboard.py
